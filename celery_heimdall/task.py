@@ -58,7 +58,7 @@ def unique_key_for_task(task: 'HeimdallTask', args, kwargs, *,
 
     # User specified an explicit key function.
     if 'key' in h:
-        return h['key'](args, kwargs)
+        return prefix + h['key'](args, kwargs)
 
     # Try to generate a unique key from the arguments given to the task.
     # Most of the cases where this will fail are also cases where Celery
