@@ -7,22 +7,26 @@ import redis
 import redis.lock
 import celery
 from kombu import serialization
+from kombu.utils import uuid
 
 from celery_heimdall.config import Config
 from celery_heimdall.errors import AlreadyQueuedError
 
 
-def acquire_lock(task: 'HeimdallTask', key: str, timeout: int):
+def acquire_lock(task: 'HeimdallTask', key: str, timeout: int, *, task_id: str):
     acquired = redis.lock.Lock(
         task.heimdall_redis,
         key,
         timeout=timeout,
-        blocking=False,
-        blocking_timeout=task.heimdall_config.unique_lock_timeout
-    ).acquire()
+        blocking=task.heimdall_config.unique_lock_blocking,
+        blocking_timeout=task.heimdall_config.unique_lock_timeout,
+    ).acquire(token=task_id)
 
     if not acquired:
-        raise AlreadyQueuedError()
+        raise AlreadyQueuedError(
+            expires_in=task.heimdall_redis.ttl(key),
+            likely_culprit=task.heimdall_redis.get(key).decode('utf-8')
+        )
 
     return acquired
 
@@ -168,9 +172,11 @@ class HeimdallTask(celery.Task, ABC):
         # setup_redis() themselves.
         raise NotImplementedError()
 
-    def apply_async(self, args=None, kwargs=None, **options):
+    def apply_async(self, args=None, kwargs=None, task_id=None, **options):
         h = getattr(self, 'heimdall', {})
         if h and 'unique' in h:
+            task_id = task_id or uuid()
+
             # Task has been configured to be globally unique, so we check for
             # the presence of a global lock before allowing it to be queued.
             acquire_lock(
@@ -184,14 +190,20 @@ class HeimdallTask(celery.Task, ABC):
                 h.get(
                     'unique_timeout',
                     self.heimdall_config.unique_timeout
-                )
+                ),
+                task_id=task_id
             )
 
         # TODO: If we kept track of queued, but not running, tasks, we should
         #       be able to estimate _when_ it would be okay to run a
         #       rate-limited task, rather then just checking when it runs.
 
-        return super().apply_async(args=args, kwargs=kwargs, **options)
+        return super().apply_async(
+            args=args,
+            kwargs=kwargs,
+            task_id=task_id,
+            **options
+        )
 
     def __call__(self, *args, **kwargs):
         h = getattr(self, 'heimdall', {})

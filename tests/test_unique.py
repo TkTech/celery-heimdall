@@ -10,8 +10,8 @@ from celery_heimdall import HeimdallTask, AlreadyQueuedError
 
 
 @celery.shared_task(base=HeimdallTask, heimdall={'unique': True})
-def default_unique_task():
-    time.sleep(2)
+def default_unique_task(dummy_arg=None):
+    time.sleep(4)
 
 
 @celery.shared_task(
@@ -25,18 +25,19 @@ def explicit_key_task():
     time.sleep(2)
 
 
-@celery.shared_task(base=HeimdallTask, heimdall={'unique': True})
-def auto_key_task(dummy_arg):
-    time.sleep(2)
-
-
 def test_default_unique(celery_session_worker):
     """
     Ensure a unique task with no other configuration "just works".
     """
     task1 = default_unique_task.apply_async()
-    with pytest.raises(AlreadyQueuedError):
+    with pytest.raises(AlreadyQueuedError) as exc_info:
         default_unique_task.apply_async()
+
+    # Ensure we populate the ID of the task most likely holding onto the lock
+    # preventing us from running.
+    assert exc_info.value.likely_culprit == task1.id
+    # 60 * 60 is the default Heimdall task timeout.
+    assert 0 < exc_info.value.expires_in <= 60 * 60
 
     # Ensure the key gets erased after the task finishes, and we can queue
     # again.
@@ -63,5 +64,5 @@ def test_different_keys(celery_session_worker):
     Ensure tasks enqueued with different args (and thus different auto keys)
     works as expected.
     """
-    auto_key_task.delay('Task1')
-    auto_key_task.delay('Task2')
+    default_unique_task.delay('Task1')
+    default_unique_task.delay('Task2')

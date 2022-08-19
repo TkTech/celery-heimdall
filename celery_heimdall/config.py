@@ -8,18 +8,20 @@ class Config:
         self.task = task
 
     def _from_task_or_app(self, key, default):
-        key = f'heimdall_{key}'
-
         if self.task:
             v = getattr(self.task, 'heimdall', {}).get(key)
             if v is not None:
                 return v
 
-        return self.app.conf.get(key, default)
+        return self.app.conf.get(f'heimdall_{key}', default)
 
     @property
     def unique_lock_timeout(self):
         return self._from_task_or_app('unique_lock_timeout', 1)
+
+    @property
+    def unique_lock_blocking(self):
+        return self._from_task_or_app('unique_lock_blocking', False)
 
     @property
     def unique_timeout(self):
