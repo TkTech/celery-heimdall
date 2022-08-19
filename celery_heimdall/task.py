@@ -23,9 +23,16 @@ def acquire_lock(task: 'HeimdallTask', key: str, timeout: int, *, task_id: str):
     ).acquire(token=task_id)
 
     if not acquired:
+        pipe = task.heimdall_redis.pipeline()
+        pipe.get(key)
+        pipe.ttl(key)
+        task_id, ttl = pipe.execute()
+
         raise AlreadyQueuedError(
-            expires_in=task.heimdall_redis.ttl(key),
-            likely_culprit=task.heimdall_redis.get(key).decode('utf-8')
+            # TTL may be -1 or -2 if the key didn't exist, depending on the
+            # version of Redis.
+            expires_in=max(0, ttl),
+            likely_culprit=task_id.decode('utf-8') if task_id else None
         )
 
     return acquired
