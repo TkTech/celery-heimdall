@@ -71,6 +71,29 @@ Now, `generate_report` will be allowed to run again in an hour even if the
 task got stuck, the worker ran out of memory, the machine burst into flames,
 etc...
 
+By default, a hash of the task name and its arguments is used as the lock key.
+But this often might not be what you want. What if you only want one report at
+a time, even for different customers? Ex:
+
+```python
+from celery import shared_task
+from celery_heimdall import HeimdallTask
+
+@shared_task(
+  base=HeimdallTask,
+  heimdall={
+    'unique': True,
+    'key': lambda args, kwargs: 'generate_report'
+  }
+)
+def generate_report(customer_id):
+  pass
+```
+By specifying our own key function, we can completely customize how we determine
+if a task is unique.
+
+## Unique Interval Task
+
 What if we want the task to only run once in an hour, even if it's finished?
 In those cases, we want it to run, but not clear the lock when it's finished:
 
@@ -91,31 +114,8 @@ def generate_report(customer_id):
 ```
 
 By setting `unique_wait_for_expiry` to `True`, the task will finish, and won't
-allow another `generate_report()` to be called until `unique_timeout` has
+allow another `generate_report()` to be queued until `unique_timeout` has
 passed.
-
-By default, a hash of the task name and its arguments is used as the lock key.
-But this often might not be what you want. What if you only want one report at
-a time, even for different customers? Ex:
-
-```python
-from celery import shared_task
-from celery_heimdall import HeimdallTask
-
-@shared_task(
-  base=HeimdallTask,
-  heimdall={
-    'unique': True,
-    'key': lambda args, kwargs: 'generate_report'
-  }
-)
-def generate_report(customer_id):
-  pass
-```
-
-By specifying our own key function, we can completely customize how we determine
-if a task is unique.
-
 
 ### Rate Limiting
 

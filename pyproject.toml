@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Helpful celery extensions."
 authors = ["Tyler Kennedy <tk@tkte.ch>"]
 license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/tktech/celery-heimdall"
+repository = "https://github.com/tktech/celery-heimdall"
 
 [tool.poetry.dependencies]
 python = "^3.7"
