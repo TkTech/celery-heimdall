@@ -186,20 +186,29 @@ class HeimdallTask(celery.Task, ABC):
 
             # Task has been configured to be globally unique, so we check for
             # the presence of a global lock before allowing it to be queued.
-            acquire_lock(
-                self,
-                unique_key_for_task(
+            try:
+                acquire_lock(
                     self,
-                    args,
-                    kwargs,
-                    prefix=self.heimdall_config.lock_prefix
-                ),
-                h.get(
-                    'unique_timeout',
-                    self.heimdall_config.unique_timeout
-                ),
-                task_id=task_id
-            )
+                    unique_key_for_task(
+                        self,
+                        args,
+                        kwargs,
+                        prefix=self.heimdall_config.lock_prefix
+                    ),
+                    h.get(
+                        'unique_timeout',
+                        self.heimdall_config.unique_timeout
+                    ),
+                    task_id=task_id
+                )
+            except AlreadyQueuedError as exc:
+                if not self.heimdall_config.unique_raises:
+                    # If we were unable to get the task ID for whatever reason,
+                    # we just fall through and raise anyway.
+                    if exc.likely_culprit is not None:
+                        return self.AsyncResult(exc.likely_culprit)
+
+                raise
 
         # TODO: If we kept track of queued, but not running, tasks, we should
         #       be able to estimate _when_ it would be okay to run a

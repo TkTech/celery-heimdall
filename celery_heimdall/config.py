@@ -34,3 +34,7 @@ class Config:
     @property
     def rate_limit_prefix(self):
         return self._from_task_or_app('rate_limit_prefix', 'h-rate:')
+
+    @property
+    def unique_raises(self):
+        return self._from_task_or_app('unique_raises', False)
