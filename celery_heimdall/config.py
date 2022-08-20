@@ -21,7 +21,7 @@ class Config:
 
     @property
     def unique_lock_blocking(self):
-        return self._from_task_or_app('unique_lock_blocking', False)
+        return self._from_task_or_app('unique_lock_blocking', True)
 
     @property
     def unique_timeout(self):
