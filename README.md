@@ -92,7 +92,7 @@ def generate_report(customer_id):
 By specifying our own key function, we can completely customize how we determine
 if a task is unique.
 
-## Unique Interval Task
+#### Unique Interval Task
 
 What if we want the task to only run once in an hour, even if it's finished?
 In those cases, we want it to run, but not clear the lock when it's finished:
