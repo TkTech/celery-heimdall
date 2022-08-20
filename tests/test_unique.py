@@ -38,6 +38,7 @@ def test_default_unique(celery_session_worker):
     assert exc_info.value.likely_culprit == task1.id
     # 60 * 60 is the default Heimdall task timeout.
     assert 0 < exc_info.value.expires_in <= 60 * 60
+    assert task1.id in repr(exc_info.value)
 
     # Ensure the key gets erased after the task finishes, and we can queue
     # again.
