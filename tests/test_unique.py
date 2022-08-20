@@ -25,6 +25,19 @@ def explicit_key_task():
     time.sleep(2)
 
 
+@celery.shared_task(
+    base=HeimdallTask,
+    bind=True,
+    heimdall={
+        'unique': True,
+        'lock_prefix': 'new-prefix:'
+    }
+)
+def task_with_override_config(task: HeimdallTask):
+    time.sleep(2)
+    return task.heimdall_config.lock_prefix
+
+
 def test_default_unique(celery_session_worker):
     """
     Ensure a unique task with no other configuration "just works".
@@ -67,3 +80,14 @@ def test_different_keys(celery_session_worker):
     """
     default_unique_task.delay('Task1')
     default_unique_task.delay('Task2')
+
+
+def test_task_with_override_config(celery_session_worker):
+    """
+    Ensure we can override Config values from the `heimdall` task argument.
+    """
+    task1 = task_with_override_config.apply_async()
+    with pytest.raises(AlreadyQueuedError):
+        task_with_override_config.apply_async()
+
+    assert task1.get() == 'new-prefix:'
