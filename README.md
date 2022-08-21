@@ -2,6 +2,7 @@
 
 [![codecov](https://codecov.io/gh/TkTech/celery-heimdall/branch/main/graph/badge.svg?token=1A2CVHQ25Q)](https://codecov.io/gh/TkTech/celery-heimdall)
 ![GitHub](https://img.shields.io/github/license/tktech/celery-heimdall)
+![PyPI - Python Version](https://img.shields.io/pypi/pyversions/celery-heimdall)
 
 Celery Heimdall is a set of common utilities useful for the Celery background
 worker framework, built on top of Redis. It's not trying to handle every use
