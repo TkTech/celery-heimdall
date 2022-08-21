@@ -33,12 +33,7 @@ want what Heimdall calls a unique task:
 from celery import shared_task
 from celery_heimdall import HeimdallTask
 
-@shared_task(
-  base=HeimdallTask,
-  heimdall={
-    'unique': True
-  }
-)
+@shared_task(base=HeimdallTask, heimdall={'unique': True})
 def generate_report(customer_id):
     pass
 ```
@@ -46,6 +41,8 @@ def generate_report(customer_id):
 All we've done here is change the base Task class that Celery will use to run
 the task, and passed in some options for Heimdall to use. This task is now
 unique - for the given arguments, only 1 will ever run at the same time.
+
+#### Expiry
 
 What happens if our task dies, or something goes wrong? We might end up in a
 situation where our lock never gets cleared, called [deadlock][]. To work around
@@ -71,6 +68,8 @@ Now, `generate_report` will be allowed to run again in an hour even if the
 task got stuck, the worker ran out of memory, the machine burst into flames,
 etc...
 
+#### Custom Keys
+
 By default, a hash of the task name and its arguments is used as the lock key.
 But this often might not be what you want. What if you only want one report at
 a time, even for different customers? Ex:
@@ -91,6 +90,70 @@ def generate_report(customer_id):
 ```
 By specifying our own key function, we can completely customize how we determine
 if a task is unique.
+
+#### The Existing Task
+
+By default, if you try to queue up a unique task that is already running,
+Heimdall will return the existing task's `AsyncResult`. This lets you write
+simple code that doesn't need to care if a task is unique or not. Imagine a
+simple API endpoint that starts a report when it's hit, but we only want it
+to run one at a time. The below is all you need:
+
+```python
+import time
+from celery import shared_task
+from celery_heimdall import HeimdallTask
+
+@shared_task(base=HeimdallTask, heimdall={'unique': True})
+def generate_report(customer_id):
+  time.sleep(10)
+
+def my_api_call(customer_id: int):
+  return {
+    'status': 'RUNNING',
+    'task_id': generate_report.delay(customer_id).id
+  }
+```
+
+Everytime `my_api_call` is called with the same `customer_id`, the same
+`task_id` will be returned by `generate_report.delay()` until the original task
+has completed.
+
+Sometimes you'll want to catch that the task was already running when you tried
+to queue it again. We can tell Heimdall to raise an exception in this case:
+
+```python
+import time
+from celery import shared_task
+from celery_heimdall import HeimdallTask, AlreadyQueuedError
+
+
+@shared_task(
+  base=HeimdallTask,
+  heimdall={
+    'unique': True,
+    'unique_raises': True
+  }
+)
+def generate_report(customer_id):
+  time.sleep(10)
+
+
+def my_api_call(customer_id: int):
+  try:
+    task = generate_report.delay(customer_id)
+    return {'status': 'STARTED', 'task_id': task.id}
+  except AlreadyQueuedError as exc:
+    return {'status': 'ALREADY_RUNNING', 'task_id': exc.likely_culprit}
+```
+
+By setting `unique_raises` to `True` when we define our task, an
+`AlreadyQueuedError` will be raised when you try to queue up a unique task
+twice. The `AlreadyQueuedError` has two properties:
+
+- `likely_culprit`, which contains the task ID of the already-running task,
+- `expires_in`, which is the time remaining (in seconds) before the 
+  already-running task is considered to be expired.
 
 #### Unique Interval Task
 
