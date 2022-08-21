@@ -1,5 +1,4 @@
 import hashlib
-import random
 import datetime
 from abc import ABC
 
