@@ -104,8 +104,9 @@ def rate_limited_countdown(task: 'HeimdallTask', key):
             return 0
 
         r.set(
-            f'{key}.schedule',
-            int((now + datetime.timedelta(seconds=ttl)).timestamp())
+            schedule_key,
+            int((now + datetime.timedelta(seconds=ttl)).timestamp()),
+            ex=ttl + 20
         )
         return ttl
 
@@ -115,8 +116,9 @@ def rate_limited_countdown(task: 'HeimdallTask', key):
             tz=datetime.timezone.utc
         ) + datetime.timedelta(seconds=per // times)
     )
-    r.set(f'{key}.schedule', int(new_time.timestamp()))
-    return int((new_time - now).total_seconds())
+    new_delay = int((new_time - now).total_seconds())
+    r.set(schedule_key, int(new_time.timestamp()), ex=new_delay + 20)
+    return new_delay
 
 
 class HeimdallTask(celery.Task, ABC):
