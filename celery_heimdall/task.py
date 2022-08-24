@@ -237,6 +237,10 @@ class HeimdallTask(celery.Task, ABC):
                 # any normal retry limits the user might have set on the
                 # task or globally.
                 self.request.retries -= 1
+                # Max retries needs to be set to None _before_ calling
+                # retry(). This value will not propagate, allowing the user's
+                # normal retry behaviour to apply on the next call.
+                self.max_retries = None
                 raise self.retry(countdown=delay)
 
         return self.run(*args, **kwargs)
