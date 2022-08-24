@@ -115,7 +115,7 @@ def rate_limited_countdown(task: 'HeimdallTask', key):
             datetime.timezone.utc
         ) + datetime.timedelta(seconds=per // times)
     )
-    r.set(f'{key}.schedule)', int(new_time.timestamp()))
+    r.set(f'{key}.schedule', int(new_time.timestamp()))
     return int((new_time - now).total_seconds())
 
 
