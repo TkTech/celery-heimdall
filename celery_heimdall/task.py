@@ -94,7 +94,7 @@ def rate_limited_countdown(task: 'HeimdallTask', key):
         return 0
 
     schedule_key = f'{key}.schedule'
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
 
     delay = r.get(schedule_key)
     if delay is None or int(delay) < now.timestamp():
@@ -112,7 +112,7 @@ def rate_limited_countdown(task: 'HeimdallTask', key):
     new_time = (
         datetime.datetime.fromtimestamp(
             int(delay),
-            datetime.timezone.utc
+            tz=datetime.timezone.utc
         ) + datetime.timedelta(seconds=per // times)
     )
     r.set(f'{key}.schedule', int(new_time.timestamp()))
