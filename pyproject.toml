@@ -12,6 +12,7 @@ repository = "https://github.com/tktech/celery-heimdall"
 python = "^3.7"
 celery = "^5.2.7"
 redis = "^4.3.4"
+importlib-metadata = "<=4.13"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1.2"
