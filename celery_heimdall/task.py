@@ -267,3 +267,23 @@ class HeimdallTask(celery.Task, ABC):
             )
 
         super().after_return(status, retval, task_id, args, kwargs, einfo)
+
+    def only_after(self, key: str, seconds: int) -> bool:
+        """
+        A utility for writing sub-blocks in tasks that only execute if
+        `seconds` has passed since the last time it was run.
+
+        Imagine you have a task that runs every 5 minutes, but there's one line
+        in that task you only want to run after at least an hour. You'd use
+        `only_after` to accomplish that.
+        """
+        task_id = getattr(self.request, 'id', uuid())
+        return bool(
+            redis.lock.Lock(
+                self.heimdall_redis,
+                key,
+                timeout=seconds,
+                blocking=self.heimdall_config.unique_lock_blocking,
+                blocking_timeout=self.heimdall_config.unique_lock_timeout
+            ).acquire(token=task_id)
+        )
