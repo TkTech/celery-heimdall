@@ -94,7 +94,7 @@ def rate_limited_countdown(task: 'HeimdallTask', key):
         return 0
 
     schedule_key = f'{key}.schedule'
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
 
     delay = r.get(schedule_key)
     if delay is None or int(delay) < now.timestamp():
@@ -104,19 +104,21 @@ def rate_limited_countdown(task: 'HeimdallTask', key):
             return 0
 
         r.set(
-            f'{key}.schedule',
-            int((now + datetime.timedelta(seconds=ttl)).timestamp())
+            schedule_key,
+            int((now + datetime.timedelta(seconds=ttl)).timestamp()),
+            ex=ttl + 20
         )
         return ttl
 
     new_time = (
         datetime.datetime.fromtimestamp(
             int(delay),
-            datetime.timezone.utc
+            tz=datetime.timezone.utc
         ) + datetime.timedelta(seconds=per // times)
     )
-    r.set(f'{key}.schedule)', int(new_time.timestamp()))
-    return int((new_time - now).total_seconds())
+    new_delay = int((new_time - now).total_seconds())
+    r.set(schedule_key, int(new_time.timestamp()), ex=new_delay + 20)
+    return new_delay
 
 
 class HeimdallTask(celery.Task, ABC):
@@ -237,6 +239,10 @@ class HeimdallTask(celery.Task, ABC):
                 # any normal retry limits the user might have set on the
                 # task or globally.
                 self.request.retries -= 1
+                # Max retries needs to be set to None _before_ calling
+                # retry(). This value will not propagate, allowing the user's
+                # normal retry behaviour to apply on the next call.
+                self.max_retries = None
                 raise self.retry(countdown=delay)
 
         return self.run(*args, **kwargs)
@@ -261,3 +267,23 @@ class HeimdallTask(celery.Task, ABC):
             )
 
         super().after_return(status, retval, task_id, args, kwargs, einfo)
+
+    def only_after(self, key: str, seconds: int) -> bool:
+        """
+        A utility for writing sub-blocks in tasks that only execute if
+        `seconds` has passed since the last time it was run.
+
+        Imagine you have a task that runs every 5 minutes, but there's one line
+        in that task you only want to run after at least an hour. You'd use
+        `only_after` to accomplish that.
+        """
+        task_id = getattr(self.request, 'id', uuid())
+        return bool(
+            redis.lock.Lock(
+                self.heimdall_redis,
+                key,
+                timeout=seconds,
+                blocking=self.heimdall_config.unique_lock_blocking,
+                blocking_timeout=self.heimdall_config.unique_lock_timeout
+            ).acquire(token=task_id)
+        )
