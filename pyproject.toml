@@ -12,6 +12,8 @@ repository = "https://github.com/tktech/celery-heimdall"
 python = "^3.7"
 celery = "^5.2.7"
 redis = "^4.3.4"
+click = {version = "^8.1.3", optional = true}
+SQLAlchemy = {version = "^1.4.40", optional = true}
 importlib-metadata = "<=4.13"
 
 [tool.poetry.dev-dependencies]
@@ -19,6 +21,12 @@ pytest = "^7.1.2"
 bumpversion = "^0.6.0"
 coverage = "^6.4.4"
 pytest-cov = "^3.0.0"
+
+[tool.poetry.extras]
+inspector = ["click", "sqlalchemy"]
+
+[tool.poetry.scripts]
+heimdall-inspector = "celery_heimdall.contrib.inspector.cli:cli"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
