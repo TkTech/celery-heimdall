@@ -189,13 +189,12 @@ your workers. Heimdall makes this easy:
 
 ```python
 from celery import shared_task
-from celery_heimdall import HeimdallTask
+from celery_heimdall import HeimdallTask, RateLimit
 
 @shared_task(
   base=HeimdallTask,
   heimdall={
-    'times': 2,
-    'per': 60
+    'rate_limit': RateLimit((2, 60))
   }
 )
 def download_report_from_amazon(customer_id):
@@ -208,6 +207,31 @@ can't be run because it would violate the rate limit, it'll be rescheduled.
 It's important to note this does not guarantee that your task will run _exactly_
 twice a second, just that it won't run _more_ than twice a second. Tasks are
 rescheduled with a random jitter to prevent the [thundering herd][] problem.
+
+
+#### Dynamic Rate Limiting
+
+Just like you can dynamically provide a key for a task, you can also
+dynamically provide a rate limit based off that key.
+
+
+```python
+from celery import shared_task
+from celery_heimdall import HeimdallTask, RateLimit
+
+
+@shared_task(
+  base=HeimdallTask,
+  heimdall={
+    # Provide a lower rate limit for the customer with the ID 10, for everyone
+    # else provide a higher rate limit.
+    'rate_limit': RateLimit(lambda args: (1, 30) if args[0] == 10 else (2, 30)),
+    'key': lambda args, kwargs: f'customer_{args[0]}'
+  }
+)
+def download_report_from_amazon(customer_id):
+  pass
+```
 
 
 ## Inspirations

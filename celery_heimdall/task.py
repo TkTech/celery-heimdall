@@ -1,6 +1,10 @@
+import dataclasses
+import enum
 import hashlib
 import datetime
+import inspect
 from abc import ABC
+from typing import Union, Tuple, Callable
 
 import redis
 import redis.lock
@@ -10,6 +14,16 @@ from kombu.utils import uuid
 
 from celery_heimdall.config import Config
 from celery_heimdall.errors import AlreadyQueuedError
+
+
+class Strategy(enum.Enum):
+    DEFAULT = 10
+
+
+@dataclasses.dataclass
+class RateLimit:
+    rate_limit: Union[Tuple, Callable]
+    strategy: Strategy = Strategy.DEFAULT
 
 
 def acquire_lock(task: 'HeimdallTask', key: str, timeout: int, *, task_id: str):
@@ -75,13 +89,32 @@ def unique_key_for_task(task: 'HeimdallTask', args, kwargs, *,
     return f'{prefix}{h.hexdigest()}'
 
 
-def rate_limited_countdown(task: 'HeimdallTask', key):
+def rate_limited_countdown(task: 'HeimdallTask', key, args, kwargs):
     # Based on improvements to Vigrond's original implementation by mlissner
     # on stack overflow.
     h = getattr(task, 'heimdall', {})
     r = task.heimdall_redis
 
-    times, per = h['times'], h['per']
+    if 'rate_limit' in h:
+        try:
+            times, per = h['rate_limit'].rate_limit
+        except TypeError as e:
+            f = h['rate_limit'].rate_limit
+
+            rate_limit_args = {}
+            signature = inspect.signature(f)
+            if 'key' in signature.parameters:
+                rate_limit_args['key'] = key
+            if 'task' in signature.parameters:
+                rate_limit_args['task'] = task
+            if 'args' in signature.parameters:
+                rate_limit_args['args'] = args
+            if 'kwargs' in signature.parameters:
+                rate_limit_args['kwargs'] = kwargs
+
+            times, per = h['rate_limit'].rate_limit(**rate_limit_args)
+    else:
+        times, per = h['times'], h['per']
 
     number_of_running_tasks = r.get(key)
     if number_of_running_tasks is None:
@@ -224,7 +257,7 @@ class HeimdallTask(celery.Task, ABC):
 
     def __call__(self, *args, **kwargs):
         h = getattr(self, 'heimdall', {})
-        if h and 'per' in h and 'times' in h:
+        if h and ('per' in h and 'times' in h) or 'rate_limit' in h:
             delay = rate_limited_countdown(
                 self,
                 unique_key_for_task(
@@ -232,7 +265,9 @@ class HeimdallTask(celery.Task, ABC):
                     args,
                     kwargs,
                     prefix=self.heimdall_config.rate_limit_prefix
-                )
+                ),
+                args,
+                kwargs
             )
             if delay > 0:
                 # We don't want our rescheduling retry to count against

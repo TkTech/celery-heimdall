@@ -1,9 +1,10 @@
 import time
 
 import celery.result
+import pytest
 from celery import shared_task
 
-from celery_heimdall import HeimdallTask
+from celery_heimdall import HeimdallTask, RateLimit
 
 
 @shared_task(
@@ -17,23 +18,48 @@ def default_rate_limit_task():
     pass
 
 
-def test_default_rate_limit(celery_session_worker):
+@shared_task(
+    base=HeimdallTask,
+    heimdall={
+        'rate_limit': RateLimit((2, 10))
+    }
+)
+def tuple_rate_limit_task():
+    pass
+
+
+@shared_task(
+    base=HeimdallTask,
+    heimdall={
+        'rate_limit': RateLimit(lambda key: (2, 10))
+    }
+)
+def callable_rate_limit_task():
+    pass
+
+
+@pytest.mark.parametrize('func', [
+    default_rate_limit_task,
+    tuple_rate_limit_task,
+    callable_rate_limit_task
+])
+def test_default_rate_limit(celery_session_worker, func):
     """
     Ensure a unique task with no other configuration "just works".
     """
     start = time.time()
     # Immediate
-    task1 = default_rate_limit_task.apply_async()
+    task1 = func.apply_async()
     # Immediate
-    task2 = default_rate_limit_task.apply_async()
+    task2 = func.apply_async()
     # After at least 10 seconds
-    task3 = default_rate_limit_task.apply_async()
+    task3 = func.apply_async()
     # After at least 10 seconds
-    task4 = default_rate_limit_task.apply_async()
+    task4 = func.apply_async()
     # After at least 20 seconds
-    task5 = default_rate_limit_task.apply_async()
+    task5 = func.apply_async()
     # After at least 20 seconds
-    task6 = default_rate_limit_task.apply_async()
+    task6 = func.apply_async()
 
     task1.get()
     task2.get()
