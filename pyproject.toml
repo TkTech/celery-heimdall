@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "celery-heimdall"
-version = "0.6.0"
+version = "1.0.0"
 description = "Helpful celery extensions."
 authors = ["Tyler Kennedy <tk@tkte.ch>"]
 license = "MIT"
@@ -18,7 +18,7 @@ importlib-metadata = "<=4.13"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1.2"
-bumpversion = "^0.6.0"
+bumpversion = "^1.0.0"
 coverage = "^6.4.4"
 pytest-cov = "^3.0.0"
 
