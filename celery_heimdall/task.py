@@ -280,6 +280,32 @@ class HeimdallTask(celery.Task, ABC):
                 self.max_retries = None
                 raise self.retry(countdown=delay)
 
+        # Normally, we check for uniqueness before calling the task, but if
+        # celery beat is being used, it appears to bypass the apply_async
+        # method, so we need to check again at run time.
+        if h and 'unique' in h:
+            task_id = self.request.id or uuid()
+            try:
+                acquire_lock(
+                    self,
+                    unique_key_for_task(
+                        self,
+                        args,
+                        kwargs,
+                        prefix=self.heimdall_config.lock_prefix
+                    ),
+                    h.get(
+                        'unique_timeout',
+                        self.heimdall_config.unique_timeout
+                    ),
+                    task_id=task_id
+                )
+            except AlreadyQueuedError as exc:
+                # If this task is the one holding the lock, we can just
+                # continue on and run it.
+                if exc.likely_culprit != task_id:
+                    raise
+
         return self.run(*args, **kwargs)
 
     def after_return(self, status, retval, task_id, args, kwargs, einfo):
