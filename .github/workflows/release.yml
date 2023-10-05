@@ -3,7 +3,7 @@ name: Create release
 on:
   release:
     types:
-      - created
+      - published
 
 jobs:
   sdist:
