@@ -9,32 +9,32 @@ class Config:
 
     def _from_task_or_app(self, key, default):
         if self.task:
-            v = getattr(self.task, 'heimdall', {}).get(key)
+            v = getattr(self.task, "heimdall", {}).get(key)
             if v is not None:
                 return v
 
-        return self.app.conf.get(f'heimdall_{key}', default)
+        return self.app.conf.get(f"heimdall_{key}", default)
 
     @property
     def unique_lock_timeout(self):
-        return self._from_task_or_app('unique_lock_timeout', 1)
+        return self._from_task_or_app("unique_lock_timeout", 1)
 
     @property
     def unique_lock_blocking(self):
-        return self._from_task_or_app('unique_lock_blocking', True)
+        return self._from_task_or_app("unique_lock_blocking", True)
 
     @property
     def unique_timeout(self):
-        return self._from_task_or_app('unique_timeout', 60 * 60)
+        return self._from_task_or_app("unique_timeout", 60 * 60)
 
     @property
     def lock_prefix(self):
-        return self._from_task_or_app('lock_prefix', 'h-lock:')
+        return self._from_task_or_app("lock_prefix", "h-lock:")
 
     @property
     def rate_limit_prefix(self):
-        return self._from_task_or_app('rate_limit_prefix', 'h-rate:')
+        return self._from_task_or_app("rate_limit_prefix", "h-rate:")
 
     @property
     def unique_raises(self):
-        return self._from_task_or_app('unique_raises', False)
+        return self._from_task_or_app("unique_raises", False)
