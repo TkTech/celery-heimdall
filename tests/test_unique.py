@@ -1,18 +1,30 @@
 """
 Tests for unique tasks.
 """
-import time
-
 import celery
 import pytest
 from celery.result import AsyncResult
 
 from celery_heimdall import HeimdallTask, AlreadyQueuedError
+from celery_heimdall.task import release_lock, unique_key_for_task
 
 
-@celery.shared_task(base=HeimdallTask, heimdall={'unique': True})
+@celery.shared_task(base=HeimdallTask, heimdall={'unique': True},)
 def default_unique_task(dummy_arg=None):
-    time.sleep(4)
+    return
+
+
+@celery.shared_task(
+    base=HeimdallTask,
+    heimdall={
+        'unique': True,
+        'unique_wait_for_expiry': True,
+    },
+    name='wait_for_task',
+    bind=True
+)
+def wait_for_task(self, dummy_arg=None):
+    return self.request.id
 
 
 @celery.shared_task(
@@ -23,7 +35,7 @@ def default_unique_task(dummy_arg=None):
     }
 )
 def unique_raises_task():
-    time.sleep(4)
+    return
 
 
 @celery.shared_task(
@@ -34,7 +46,7 @@ def unique_raises_task():
     }
 )
 def explicit_key_task():
-    time.sleep(2)
+    return
 
 
 @celery.shared_task(
@@ -46,7 +58,6 @@ def explicit_key_task():
     }
 )
 def task_with_override_config(task: HeimdallTask):
-    time.sleep(2)
     return task.heimdall_config.lock_prefix
 
 
@@ -112,3 +123,41 @@ def test_task_with_override_config(celery_session_worker):
 
     assert task1.id == result.id
     assert task1.get() == 'new-prefix:'
+
+
+def test_send_task(celery_session_app, celery_session_worker):
+    """
+    Ensure that tasks triggered with send_task (like celery beat) will also
+    be unique.
+    """
+    # This celery pytest plugin doesn't appear to run more than 1 worker at
+    # a time, even when configured for higher concurrency and a prefork model,
+    # so we use a unique task that doesn't clear its lock until the timeout to
+    # test the 2nd task.
+
+    # First we clear any locks that might be hanging around from a previous
+    # test run.
+    task = celery_session_app.tasks['wait_for_task']
+    release_lock(
+        task,
+        unique_key_for_task(
+            task,
+            (),
+            {},
+            prefix=task.heimdall_config.lock_prefix
+        )
+    )
+
+    # Then we queue up the task, which will complete almost immediately but
+    # leave a lock behind because of unique_wait_for_expiry.
+    task1: AsyncResult = celery_session_app.send_task(
+        'wait_for_task'
+    )
+    # Then we queue up a second task, bypassing `apply_async()`, which will
+    # check the lock at runtime.
+    task2: AsyncResult = celery_session_app.send_task(
+        'wait_for_task'
+    )
+
+    assert task1.get() == task1.id
+    assert task2.get() is None

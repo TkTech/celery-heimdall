@@ -71,7 +71,9 @@ def unique_key_for_task(task: 'HeimdallTask', args, kwargs, *,
 
     # User specified an explicit key function.
     if 'key' in h:
-        return prefix + h['key'](args, kwargs)
+        if callable(h['key']):
+            return prefix + h['key'](args, kwargs)
+        return prefix + h['key']
 
     # Try to generate a unique key from the arguments given to the task.
     # Most of the cases where this will fail are also cases where Celery
@@ -284,7 +286,7 @@ class HeimdallTask(celery.Task, ABC):
         # celery beat is being used, it appears to bypass the apply_async
         # method, so we need to check again at run time.
         if h and 'unique' in h:
-            task_id = self.request.id or uuid()
+            task_id = self.request.id
             try:
                 acquire_lock(
                     self,
@@ -304,7 +306,10 @@ class HeimdallTask(celery.Task, ABC):
                 # If this task is the one holding the lock, we can just
                 # continue on and run it.
                 if exc.likely_culprit != task_id:
-                    raise
+                    # We can't raise an exception here because it breaks
+                    # celery's funky custom tracing if an exception occurs
+                    # outside of self.run().
+                    return
 
         return self.run(*args, **kwargs)
 
