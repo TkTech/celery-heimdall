@@ -1,6 +1,5 @@
 import time
 
-import celery.result
 import pytest
 from celery import shared_task
 

@@ -47,6 +47,14 @@ def explicit_key_task():
 
 @celery.shared_task(
     base=HeimdallTask,
+    heimdall={"unique": True, "key": "MyTaskKeyStr"},
+)
+def explicit_key_task_str():
+    return
+
+
+@celery.shared_task(
+    base=HeimdallTask,
     bind=True,
     heimdall={"unique": True, "lock_prefix": "new-prefix:"},
 )
@@ -96,6 +104,11 @@ def test_unique_explicit_key(celery_session_worker):
     # again.
     task1.get()
     explicit_key_task.apply_async()
+
+    # Ensure we can use a simple string instead of a lambda.
+    task1: AsyncResult = explicit_key_task_str.apply_async()
+    result: AsyncResult = explicit_key_task_str.apply_async()
+    assert task1.id == result.id
 
 
 def test_different_keys(celery_session_worker):
