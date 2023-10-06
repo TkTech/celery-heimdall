@@ -8,7 +8,7 @@ from celery_heimdall import HeimdallTask
 
 @shared_task(base=HeimdallTask, bind=True)
 def task_with_block(self: HeimdallTask):
-    if self.only_after('only_after', 5):
+    if self.only_after("only_after", 5):
         return True
     return False
 

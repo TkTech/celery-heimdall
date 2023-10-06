@@ -13,24 +13,22 @@ def cli():
     """
 
 
-@cli.command('monitor')
-@click.argument('broker_url')
+@cli.command("monitor")
+@click.argument("broker_url")
 @click.option(
-    '--enable-events',
+    "--enable-events",
     default=False,
     is_flag=True,
     help=(
-        'Sends a command-and-control message to all Celery workers to start'
-        ' emitting worker events before starting the server.'
-    )
+        "Sends a command-and-control message to all Celery workers to start"
+        " emitting worker events before starting the server."
+    ),
 )
 @click.option(
-    '--db',
-    default='heimdall.db',
+    "--db",
+    default="heimdall.db",
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
-    help=(
-        'Use the provided path to store our sqlite database.'
-    )
+    help=("Use the provided path to store our sqlite database."),
 )
 def monitor_command(broker_url: str, enable_events: bool, db: Path):
     """
@@ -47,5 +45,5 @@ def monitor_command(broker_url: str, enable_events: bool, db: Path):
     monitor(broker=broker_url, db=db)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     cli()

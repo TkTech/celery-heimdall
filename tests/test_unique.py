@@ -9,7 +9,10 @@ from celery_heimdall import HeimdallTask, AlreadyQueuedError
 from celery_heimdall.task import release_lock, unique_key_for_task
 
 
-@celery.shared_task(base=HeimdallTask, heimdall={'unique': True},)
+@celery.shared_task(
+    base=HeimdallTask,
+    heimdall={"unique": True},
+)
 def default_unique_task(dummy_arg=None):
     return
 
@@ -17,22 +20,18 @@ def default_unique_task(dummy_arg=None):
 @celery.shared_task(
     base=HeimdallTask,
     heimdall={
-        'unique': True,
-        'unique_wait_for_expiry': True,
+        "unique": True,
+        "unique_wait_for_expiry": True,
     },
-    name='wait_for_task',
-    bind=True
+    name="wait_for_task",
+    bind=True,
 )
 def wait_for_task(self, dummy_arg=None):
     return self.request.id
 
 
 @celery.shared_task(
-    base=HeimdallTask,
-    heimdall={
-        'unique': True,
-        'unique_raises': True
-    }
+    base=HeimdallTask, heimdall={"unique": True, "unique_raises": True}
 )
 def unique_raises_task():
     return
@@ -40,10 +39,7 @@ def unique_raises_task():
 
 @celery.shared_task(
     base=HeimdallTask,
-    heimdall={
-        'unique': True,
-        'key': lambda _, __: 'MyTaskKey'
-    }
+    heimdall={"unique": True, "key": lambda _, __: "MyTaskKey"},
 )
 def explicit_key_task():
     return
@@ -52,10 +48,7 @@ def explicit_key_task():
 @celery.shared_task(
     base=HeimdallTask,
     bind=True,
-    heimdall={
-        'unique': True,
-        'lock_prefix': 'new-prefix:'
-    }
+    heimdall={"unique": True, "lock_prefix": "new-prefix:"},
 )
 def task_with_override_config(task: HeimdallTask):
     return task.heimdall_config.lock_prefix
@@ -110,8 +103,8 @@ def test_different_keys(celery_session_worker):
     Ensure tasks enqueued with different args (and thus different auto keys)
     works as expected.
     """
-    default_unique_task.delay('Task1')
-    default_unique_task.delay('Task2')
+    default_unique_task.delay("Task1")
+    default_unique_task.delay("Task2")
 
 
 def test_task_with_override_config(celery_session_worker):
@@ -122,7 +115,7 @@ def test_task_with_override_config(celery_session_worker):
     result: AsyncResult = task_with_override_config.apply_async()
 
     assert task1.id == result.id
-    assert task1.get() == 'new-prefix:'
+    assert task1.get() == "new-prefix:"
 
 
 def test_send_task(celery_session_app, celery_session_worker):
@@ -137,27 +130,20 @@ def test_send_task(celery_session_app, celery_session_worker):
 
     # First we clear any locks that might be hanging around from a previous
     # test run.
-    task = celery_session_app.tasks['wait_for_task']
+    task = celery_session_app.tasks["wait_for_task"]
     release_lock(
         task,
         unique_key_for_task(
-            task,
-            (),
-            {},
-            prefix=task.heimdall_config.lock_prefix
-        )
+            task, (), {}, prefix=task.heimdall_config.lock_prefix
+        ),
     )
 
     # Then we queue up the task, which will complete almost immediately but
     # leave a lock behind because of unique_wait_for_expiry.
-    task1: AsyncResult = celery_session_app.send_task(
-        'wait_for_task'
-    )
+    task1: AsyncResult = celery_session_app.send_task("wait_for_task")
     # Then we queue up a second task, bypassing `apply_async()`, which will
     # check the lock at runtime.
-    task2: AsyncResult = celery_session_app.send_task(
-        'wait_for_task'
-    )
+    task2: AsyncResult = celery_session_app.send_task("wait_for_task")
 
     assert task1.get() == task1.id
     assert task2.get() is None

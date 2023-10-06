@@ -7,42 +7,27 @@ from celery import shared_task
 from celery_heimdall import HeimdallTask, RateLimit
 
 
-@shared_task(
-    base=HeimdallTask,
-    heimdall={
-        'times': 2,
-        'per': 10
-    }
-)
+@shared_task(base=HeimdallTask, heimdall={"times": 2, "per": 10})
 def default_rate_limit_task():
     pass
 
 
-@shared_task(
-    base=HeimdallTask,
-    heimdall={
-        'rate_limit': RateLimit((2, 10))
-    }
-)
+@shared_task(base=HeimdallTask, heimdall={"rate_limit": RateLimit((2, 10))})
 def tuple_rate_limit_task():
     pass
 
 
 @shared_task(
-    base=HeimdallTask,
-    heimdall={
-        'rate_limit': RateLimit(lambda key: (2, 10))
-    }
+    base=HeimdallTask, heimdall={"rate_limit": RateLimit(lambda key: (2, 10))}
 )
 def callable_rate_limit_task():
     pass
 
 
-@pytest.mark.parametrize('func', [
-    default_rate_limit_task,
-    tuple_rate_limit_task,
-    callable_rate_limit_task
-])
+@pytest.mark.parametrize(
+    "func",
+    [default_rate_limit_task, tuple_rate_limit_task, callable_rate_limit_task],
+)
 def test_default_rate_limit(celery_session_worker, func):
     """
     Ensure a unique task with no other configuration "just works".

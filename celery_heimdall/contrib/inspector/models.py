@@ -8,7 +8,7 @@ from sqlalchemy import (
     func,
     BigInteger,
     text,
-    Enum
+    Enum,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -36,7 +36,7 @@ class TaskStatus(enum.Enum):
 
 
 class TaskInstance(Base):
-    __tablename__ = 'task_instance'
+    __tablename__ = "task_instance"
 
     uuid = Column(String, primary_key=True)
     name = Column(String)
@@ -53,18 +53,18 @@ class TaskInstance(Base):
     rejected = Column(TIMESTAMP, nullable=True)
     succeeded = Column(TIMESTAMP, nullable=True)
 
-    retries = Column(Integer, server_default=text('0'))
+    retries = Column(Integer, server_default=text("0"))
     last_seen = Column(TIMESTAMP, server_onupdate=func.now())
 
 
 class Worker(Base):
-    __tablename__ = 'worker'
+    __tablename__ = "worker"
 
     #: The hostname of a worker is used as its ID.
     id = Column(String, primary_key=True)
 
     #: How often the worker is configured to send heartbeats.
-    frequency = Column(Integer, server_default=text('0'))
+    frequency = Column(Integer, server_default=text("0"))
     #: Name of the worker software
     sw_identity = Column(String, nullable=True)
     #: Version of the worker software.
@@ -73,9 +73,9 @@ class Worker(Base):
     sw_system = Column(String, nullable=True)
 
     #: Number of currently executing tasks.
-    active = Column(BigInteger, server_default=text('0'))
+    active = Column(BigInteger, server_default=text("0"))
     #: Number of processed tasks.
-    processed = Column(BigInteger, server_default=text('0'))
+    processed = Column(BigInteger, server_default=text("0"))
 
     #: Last known status of the worker.
     status = Column(Enum(WorkerStatus))
