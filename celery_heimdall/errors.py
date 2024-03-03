@@ -12,15 +12,15 @@ class AlreadyQueuedError(Exception):
     `likely_culprit` is here to assist in debugging deadlocks. Retrieving this
     value is not atomic, and thus should not be relied upon.
     """
-    def __init__(self, *, expires_in: Optional[int] = None,
-                 likely_culprit: Optional[str] = None):
+
+    def __init__(
+        self,
+        likely_culprit: Optional[str] = None,
+    ):
         super().__init__()
         self.likely_culprit = likely_culprit
-        self.expires_in = expires_in
 
     def __repr__(self):
         return (
-            '<AlreadyQueuedError('
-            f'likely_culprit={self.likely_culprit!r},'
-            f' expires_in={self.expires_in!r})>'
+            f"{self.__class__.__name__}(likely_culprit={self.likely_culprit!r})"
         )

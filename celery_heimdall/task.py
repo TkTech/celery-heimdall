@@ -1,324 +1,296 @@
-import dataclasses
-import enum
 import hashlib
-import datetime
-import inspect
 from abc import ABC
-from typing import Union, Tuple, Callable
+from dataclasses import dataclass
+from enum import Enum
+from functools import cache
+from typing import Callable
 
-import redis
-import redis.lock
 import celery
+import redis
+from celery import Celery
 from kombu import serialization
 from kombu.utils import uuid
 
-from celery_heimdall.config import Config
-from celery_heimdall.errors import AlreadyQueuedError
+from . import lock
+from .errors import AlreadyQueuedError
 
 
-class Strategy(enum.Enum):
+class RateLimitStrategy(Enum):
+    """
+    Strategies for rate limiting tasks.
+    """
+
     DEFAULT = 10
 
 
-@dataclasses.dataclass
+@dataclass
 class RateLimit:
-    rate_limit: Union[Tuple, Callable]
-    strategy: Strategy = Strategy.DEFAULT
+    """
+    A rate limit configuration for a HeimdallTask.
+    """
+
+    # The rate limit to apply to the task. Can be a tuple in the form of
+    # (times, per) or a callable that returns a tuple.
+    rate_limit: tuple | Callable
+    # The strategy to use for rate limiting.
+    strategy: RateLimitStrategy = RateLimitStrategy.DEFAULT
 
 
-def acquire_lock(task: 'HeimdallTask', key: str, timeout: int, *, task_id: str):
-    acquired = redis.lock.Lock(
-        task.heimdall_redis,
-        key,
-        timeout=timeout,
-        blocking=task.heimdall_config.unique_lock_blocking,
-        blocking_timeout=task.heimdall_config.unique_lock_timeout,
-    ).acquire(token=task_id)
+@cache
+def _cached_redis(app: Celery) -> redis.Redis | None:
+    backend = app.conf.get("result_backend", "")
+    if backend.startswith("redis://"):
+        return redis.Redis.from_url(backend)
 
-    if not acquired:
-        pipe = task.heimdall_redis.pipeline()
-        pipe.get(key)
-        pipe.ttl(key)
-        task_id, ttl = pipe.execute()
+    broker = app.conf.get("broker_url", "")
+    if broker.startswith("redis://"):
+        return redis.Redis.from_url(broker)
 
-        raise AlreadyQueuedError(
-            # TTL may be -1 or -2 if the key didn't exist, depending on the
-            # version of Redis.
-            expires_in=max(0, ttl),
-            likely_culprit=task_id.decode('utf-8') if task_id else None
+
+@dataclass
+class HeimdallConfig:
+    """
+    Configuration options for a HeimdallTask.
+    """
+
+    # If True, the task will be globally unique, allowing only one instance
+    # to run or be queued at a time.
+    unique: bool = False
+    # If True, the lock will be acquired before the task is queued.
+    unique_early: bool = True
+    # If True, the lock will be acquired when the task is started.
+    unique_late: bool = True
+    # If True, the task will raise an exception if it's already queued.
+    unique_raises: bool = False
+    # The amount of time to wait before allowing the task lock to expire,
+    # even if the task has not yet completed.
+    unique_expiry: int = 60 * 100
+    # If True, the task will wait for the lock to expire instead of releasing
+    # it, even if the task has already completed. This can be used to easily
+    # implement tasks that should only run once per interval.
+    unique_wait_for_expiry: bool = False
+    # A user-provided unique key for the task. If not specified, a unique
+    # key will be generated from the task's arguments.
+    key: str | Callable = None
+
+    # The default prefix to use for the task lock key.
+    lock_prefix: str = "h-lock"
+    # The default prefix to use for the rate limit key.
+    rate_limit_prefix: str = "h-rate"
+
+    def get_redis(self, app: Celery) -> redis.Redis:
+        """
+        Get a Redis instance for the task.
+
+        The resulting instance will be used to store task locks and rate
+        limiting information. It's important that the instance is shared
+        across all workers to ensure that the locks and rate limiting are
+        effective.
+
+        If not implemented by the user, the default implementation will
+        try to get the Redis instance from the Celery app, if available.
+        """
+        if (client := _cached_redis(app)) is not None:
+            return client
+
+        raise NotImplementedError(
+            "No Redis instance available from the Celery configuration and no"
+            " get_redis() implemented."
         )
 
-    return acquired
+    def get_lock_prefix(self) -> str:
+        """
+        Get the prefix to use for the task lock key.
+
+        The prefix is used to namespace the lock key to avoid conflicts with
+        other locks that may be sharing the same Redis instance.
+        """
+        return self.lock_prefix
+
+    def get_rate_limit_prefix(self) -> str:
+        """
+        Get the prefix to use for the rate limit key.
+
+        The prefix is used to namespace the rate limit key to avoid conflicts
+        with other rate limits that may be sharing the same Redis instance.
+        """
+        return self.rate_limit_prefix
+
+    def get_key(self, task: celery.Task, args, kwargs) -> bytes:
+        """
+        Get the unique key for the task.
+
+        If the key is a callable, it will be called with the task's arguments
+        and keyword arguments to generate the key.
+        """
+        # When Celery deserializes the arguments for a job, args and kwargs will
+        # be `[]` or `{}`, even if they were `None` when serialized. Ensure we
+        # do the same here or the hashes will never match when arguments are
+        # empty.
+        args = args or []
+        kwargs = kwargs or {}
+
+        if not self.key:
+            # No key was provided, so we'll generate a reasonably-unique key
+            # from the task and its arguments.
+            _, _, data = serialization.dumps((args, kwargs), serializer="json")
+
+            h = hashlib.md5()
+            h.update(task.name.encode("utf-8"))
+            h.update(data.encode("utf-8"))
+            k = h.hexdigest()
+        elif callable(self.key):
+            # If the key is a callable, we'll call it with the task's arguments
+            # and keyword arguments to allow the user to generate their own
+            # keys.
+            k = self.key(args, kwargs)
+        else:
+            # Otherwise it should just be a simple string.
+            k = self.key
+
+        return f"{self.get_lock_prefix()}:{k}".encode("utf-8")
 
 
-def release_lock(task: 'HeimdallTask', key: str):
-    task.heimdall_redis.delete(key)
-
-
-def unique_key_for_task(task: 'HeimdallTask', args, kwargs, *,
-                        prefix='') -> str:
+class HeimdallNamespace:
     """
-    Given a task and its arguments, generate a unique key which can be used
-    to identify it.
+    A namespace for Heimdall configuration and utilities for a task, to keep
+    them from conflicting with other task mixins.
     """
-    h = getattr(task, 'heimdall', {})
 
-    # When Celery deserializes the arguments for a job, args and kwargs will
-    # be `[]` or `{}`, even if they were `None` when serialized. Ensure we
-    # do the same here or the hashes will never match when arguments are empty.
-    args = args or []
-    kwargs = kwargs or {}
+    def __init__(self, task: "HeimdallTask"):
+        self.task = task
+        self.config = getattr(task, "heimdall", HeimdallConfig())
+        self.redis = self.config.get_redis(task.app)
 
-    # User specified an explicit key function.
-    if 'key' in h:
-        return prefix + h['key'](args, kwargs)
+    def extend_lock(self, milliseconds: int):
+        """
+        Extends the expiry on the lock for the current task by the given number
+        of milliseconds.
+        """
+        if not self.config.unique:
+            raise ValueError("Task is not configured to have a unique lock")
 
-    # Try to generate a unique key from the arguments given to the task.
-    # Most of the cases where this will fail are also cases where Celery
-    # will be unable to serialize the job, so we're not too concerned with
-    # validation.
-    _, _, data = serialization.dumps(
-        (args, kwargs),
-        # TODO: We should _probably_ use the same serializer as the task.
-        'json'
-    )
-
-    h = hashlib.md5()
-    h.update(task.name.encode('utf-8'))
-    h.update(data.encode('utf-8'))
-    return f'{prefix}{h.hexdigest()}'
-
-
-def rate_limited_countdown(task: 'HeimdallTask', key, args, kwargs):
-    # Based on improvements to Vigrond's original implementation by mlissner
-    # on stack overflow.
-    h = getattr(task, 'heimdall', {})
-    r = task.heimdall_redis
-
-    if 'rate_limit' in h:
-        try:
-            times, per = h['rate_limit'].rate_limit
-        except TypeError as e:
-            f = h['rate_limit'].rate_limit
-
-            rate_limit_args = {}
-            signature = inspect.signature(f)
-            if 'key' in signature.parameters:
-                rate_limit_args['key'] = key
-            if 'task' in signature.parameters:
-                rate_limit_args['task'] = task
-            if 'args' in signature.parameters:
-                rate_limit_args['args'] = args
-            if 'kwargs' in signature.parameters:
-                rate_limit_args['kwargs'] = kwargs
-
-            times, per = h['rate_limit'].rate_limit(**rate_limit_args)
-    else:
-        times, per = h['times'], h['per']
-
-    number_of_running_tasks = r.get(key)
-    if number_of_running_tasks is None:
-        r.set(key, 1, ex=per)
-        return 0
-
-    if int(number_of_running_tasks) < times:
-        if r.incr(key, 1) == 1:
-            r.expire(key, per)
-        return 0
-
-    schedule_key = f'{key}.schedule'
-    now = datetime.datetime.now(tz=datetime.timezone.utc)
-
-    delay = r.get(schedule_key)
-    if delay is None or int(delay) < now.timestamp():
-        # Either not scheduled, or scheduled in the past.
-        ttl = r.ttl(key)
-        if ttl < 0:
-            return 0
-
-        r.set(
-            schedule_key,
-            int((now + datetime.timedelta(seconds=ttl)).timestamp()),
-            ex=ttl + 20
+        key = self.config.get_key(
+            self.task, self.task.request.args, self.task.request.kwargs
         )
-        return ttl
 
-    new_time = (
-        datetime.datetime.fromtimestamp(
-            int(delay),
-            tz=datetime.timezone.utc
-        ) + datetime.timedelta(seconds=per // times)
-    )
-    new_delay = int((new_time - now).total_seconds())
-    r.set(schedule_key, int(new_time.timestamp()), ex=new_delay + 20)
-    return new_delay
+        return lock.extend(
+            self.redis,
+            key,
+            self.task.request.id.encode("utf-8"),
+            milliseconds,
+            replace=False,
+        )
+
+    def clear_lock(self) -> bool:
+        """
+        Clears the lock for the current task.
+        """
+        if not self.config.unique:
+            raise ValueError("Task is not configured to have a unique lock")
+
+        key = self.config.get_key(
+            self.task, self.task.request.args, self.task.request.kwargs
+        )
+
+        return lock.release(
+            self.redis, key, token=self.task.request.id.encode("utf-8")
+        )
 
 
 class HeimdallTask(celery.Task, ABC):
     """
-    An all-seeing base task for Celery, it provides useful global utilities
-    for common Celery behaviors, such as global rate limiting and singleton
-    (only one at a time) tasks.
+    A base task for Celery that adds helpful features such as global rate
+    limiting and unique task execution.
+
+    These features are built on top of Redis and are designed to be
+    distributed across multiple workers using a shared Redis instance.
     """
+
     abstract = True
 
-    def __init__(self):
-        super().__init__()
-        self._heimdall_config = None
-        self._heimdall_redis = None
-
-    @property
-    def heimdall_config(self) -> Config:
-        if not self._heimdall_config:
-            self._heimdall_config = Config(self.app, task=self)
-        return self._heimdall_config
-
-    @property
-    def heimdall_redis(self) -> redis.Redis:
-        if not self._heimdall_redis:
-            self._heimdall_redis = self.setup_redis()
-        return self._heimdall_redis
-
-    def setup_redis(self) -> redis.Redis:
-        """
-        Sets up the Redis connection. By default, it'll use any Redis instance
-        it can find (in order):
-
-            - the Celery result backend
-            - the Celery broker
-
-        If nothing can be found, or if you want to explicitly specify a Redis
-        connection you'll need to implement this method yourself, ex:
-
-        .. code::
-
-            from redis import Redis
-            from celery_heimdall import HeimdallTask
-
-            class MyHeimdallTask(HeimdallTask):
-                def setup_redis(self):
-                    return Redis.from_url('redis://')
-        """
-        # Try to use the Celery result backend, if it's configured for redis.
-        backend = self.app.conf.get('result_backend') or ''
-        if backend.startswith('redis://'):
-            return redis.Redis.from_url(backend)
-
-        # If not the backend, try the broker....
-        broker = self.app.conf.get('broker_url') or ''
-        if broker.startswith('redis://'):
-            return redis.Redis.from_url(broker)
-
-        # Nope, we can't find a usable redis, user will need to implement
-        # setup_redis() themselves.
-        raise NotImplementedError()
-
-    def apply_async(self, args=None, kwargs=None, task_id=None, **options):
-        h = getattr(self, 'heimdall', {})
-        if h and 'unique' in h:
-            task_id = task_id or uuid()
-
-            # Task has been configured to be globally unique, so we check for
-            # the presence of a global lock before allowing it to be queued.
-            try:
-                acquire_lock(
-                    self,
-                    unique_key_for_task(
-                        self,
-                        args,
-                        kwargs,
-                        prefix=self.heimdall_config.lock_prefix
-                    ),
-                    h.get(
-                        'unique_timeout',
-                        self.heimdall_config.unique_timeout
-                    ),
-                    task_id=task_id
-                )
-            except AlreadyQueuedError as exc:
-                if not self.heimdall_config.unique_raises:
-                    # If we were unable to get the task ID for whatever reason,
-                    # we just fall through and raise anyway.
-                    if exc.likely_culprit is not None:
-                        return self.AsyncResult(exc.likely_culprit)
-
-                raise
-
-        # TODO: If we kept track of queued, but not running, tasks, we should
-        #       be able to estimate _when_ it would be okay to run a
-        #       rate-limited task, rather then just checking when it runs.
-
-        return super().apply_async(
-            args=args,
-            kwargs=kwargs,
-            task_id=task_id,
-            **options
-        )
+    def __init__(self, *args, **kwargs):
+        self._bifrost = None
+        super().__init__(*args, **kwargs)
 
     def __call__(self, *args, **kwargs):
-        h = getattr(self, 'heimdall', {})
-        if h and ('per' in h and 'times' in h) or 'rate_limit' in h:
-            delay = rate_limited_countdown(
-                self,
-                unique_key_for_task(
-                    self,
-                    args,
-                    kwargs,
-                    prefix=self.heimdall_config.rate_limit_prefix
-                ),
-                args,
-                kwargs
-            )
-            if delay > 0:
-                # We don't want our rescheduling retry to count against
-                # any normal retry limits the user might have set on the
-                # task or globally.
-                self.request.retries -= 1
-                # Max retries needs to be set to None _before_ calling
-                # retry(). This value will not propagate, allowing the user's
-                # normal retry behaviour to apply on the next call.
-                self.max_retries = None
-                raise self.retry(countdown=delay)
+        bifrost = self.bifrost()
+
+        # Acquire a globally unique lock for this task at the time it's
+        # executed.
+        if bifrost.config.unique and bifrost.config.unique_late:
+            key = bifrost.config.get_key(self, args, kwargs)
+
+            token = lock.lock(
+                bifrost.redis,
+                key,
+                token=self.request.id.encode("utf-8"),
+                expiry=bifrost.config.unique_expiry,
+            ).decode("utf-8")
+
+            if not token == self.request.id:
+                raise AlreadyQueuedError(token)
 
         return self.run(*args, **kwargs)
+
+    def apply_async(self, args=None, kwargs=None, task_id=None, **options):
+        bifrost = self.bifrost()
+
+        if bifrost.config.unique and bifrost.config.unique_early:
+            # Acquire a globally unique lock for this task before it's queued.
+            # In some cases, this function may not be called, such as by
+            # send_task() or non-standard task execution.
+            task_id: str = task_id or uuid()
+            key = bifrost.config.get_key(self, args, kwargs)
+
+            token = lock.lock(
+                bifrost.redis,
+                key,
+                token=task_id.encode("utf-8"),
+                expiry=bifrost.config.unique_expiry,
+            ).decode("utf-8")
+
+            if not token == task_id:
+                if not bifrost.config.unique_raises:
+                    # If the task is not configured to raise an exception when
+                    # it's already queued, we'll just return the task ID of the
+                    # task that already holds the lock.
+                    if token is not None:
+                        return self.AsyncResult(token)
+
+                raise AlreadyQueuedError(token)
+
+        return super().apply_async(
+            args=args, kwargs=kwargs, task_id=task_id, **options
+        )
 
     def after_return(self, status, retval, task_id, args, kwargs, einfo):
         # Handles post-task cleanup, when a task exits cleanly. This will be
         # called if a task raises an exception (stored in `einfo`), but not
         # if a worker straight up dies (say, because of running out of memory)
-        h = getattr(self, 'heimdall', {})
+        bifrost = self.bifrost()
 
         # Cleanup the unique task lock when the task finishes, unless the user
         # told us to wait for the remaining interval.
-        if h and 'unique' in h and not h.get('unique_wait_for_expiry'):
-            release_lock(
-                self,
-                unique_key_for_task(
-                    self,
-                    args,
-                    kwargs,
-                    prefix=self.heimdall_config.lock_prefix
-                )
-            )
+        if bifrost.config.unique and not bifrost.config.unique_wait_for_expiry:
+            key = bifrost.config.get_key(self, args, kwargs)
+            # It's not an error for our lock to have already been cleared by
+            # another token, because our token may have expired.
+            lock.release(bifrost.redis, key, token=task_id.encode("utf-8"))
 
         super().after_return(status, retval, task_id, args, kwargs, einfo)
 
-    def only_after(self, key: str, seconds: int) -> bool:
+    def bifrost(self) -> HeimdallNamespace:
         """
-        A utility for writing sub-blocks in tasks that only execute if
-        `seconds` has passed since the last time it was run.
+        Get the Heimdall namespace for the task.
 
-        Imagine you have a task that runs every 5 minutes, but there's one line
-        in that task you only want to run after at least an hour. You'd use
-        `only_after` to accomplish that.
+        This object contains the Heimdall configuration for this task, redis
+        caches, and other helpful utilities. It's designed to be used by the
+        task to interact with Heimdall features while minimizing conflicts
+        with other Task implementations.
         """
-        task_id = getattr(self.request, 'id', uuid())
-        return bool(
-            redis.lock.Lock(
-                self.heimdall_redis,
-                key,
-                timeout=seconds,
-                blocking=self.heimdall_config.unique_lock_blocking,
-                blocking_timeout=self.heimdall_config.unique_lock_timeout
-            ).acquire(token=task_id)
-        )
+        if self._bifrost is not None:
+            return self._bifrost
+
+        self._bifrost = HeimdallNamespace(self)
+        return self._bifrost

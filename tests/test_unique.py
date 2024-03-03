@@ -1,6 +1,7 @@
 """
 Tests for unique tasks.
 """
+
 import time
 
 import celery
@@ -8,30 +9,23 @@ import pytest
 from celery.result import AsyncResult
 
 from celery_heimdall import HeimdallTask, AlreadyQueuedError
+from celery_heimdall.task import HeimdallConfig
 
 
-@celery.shared_task(base=HeimdallTask, heimdall={'unique': True})
+@celery.shared_task(base=HeimdallTask, heimdall=HeimdallConfig(unique=True))
 def default_unique_task(dummy_arg=None):
     time.sleep(4)
 
 
 @celery.shared_task(
-    base=HeimdallTask,
-    heimdall={
-        'unique': True,
-        'unique_raises': True
-    }
+    base=HeimdallTask, heimdall=HeimdallConfig(unique=True, unique_raises=True)
 )
 def unique_raises_task():
     time.sleep(4)
 
 
 @celery.shared_task(
-    base=HeimdallTask,
-    heimdall={
-        'unique': True,
-        'key': lambda _, __: 'MyTaskKey'
-    }
+    base=HeimdallTask, heimdall=HeimdallConfig(unique=True, key="MyTaskKey")
 )
 def explicit_key_task():
     time.sleep(2)
@@ -39,59 +33,87 @@ def explicit_key_task():
 
 @celery.shared_task(
     base=HeimdallTask,
+    heimdall=HeimdallConfig(unique=True, key=lambda args, kwargs: "MyTaskKey"),
+)
+def explicit_key_callable_task():
+    time.sleep(2)
+
+
+@celery.shared_task(
+    base=HeimdallTask,
     bind=True,
-    heimdall={
-        'unique': True,
-        'lock_prefix': 'new-prefix:'
-    }
+    heimdall=HeimdallConfig(unique=True, lock_prefix="new-prefix"),
 )
 def task_with_override_config(task: HeimdallTask):
     time.sleep(2)
-    return task.heimdall_config.lock_prefix
+    return task.bifrost().config.get_lock_prefix()
+
+
+@celery.shared_task(
+    base=HeimdallTask,
+    heimdall=HeimdallConfig(unique=True, unique_early=False, unique_late=True),
+)
+def task_with_late_lock():
+    time.sleep(5)
 
 
 def test_default_unique(celery_session_worker):
     """
     Ensure a unique task with no other configuration "just works".
     """
-    task1: AsyncResult = default_unique_task.apply_async()
-    result: AsyncResult = default_unique_task.apply_async()
-    assert result.id == task1.id
+    task_1: AsyncResult = default_unique_task.apply_async()
+    task_2: AsyncResult = default_unique_task.apply_async()
+    assert task_1.id == task_2.id
 
     # Ensure the key gets erased after the task finishes, and we can queue
     # again.
-    task1.get()
-    default_unique_task.apply_async()
+    task_1.get()
+    task_3: AsyncResult = default_unique_task.apply_async()
+    assert task_3.id != task_1.id
 
 
 def test_raises_unique(celery_session_worker):
     """
     Ensure a unique task raises an exception on conflicts.
     """
-    task1: AsyncResult = unique_raises_task.apply_async()
+    task_1: AsyncResult = unique_raises_task.apply_async()
     with pytest.raises(AlreadyQueuedError) as exc_info:
-        result: AsyncResult = unique_raises_task.apply_async()
+        unique_raises_task.apply_async()
 
     # Ensure we populate the ID of the task most likely holding onto the lock
     # preventing us from running.
-    assert exc_info.value.likely_culprit == task1.id
-    # 60 * 60 is the default Heimdall task timeout.
-    assert 0 < exc_info.value.expires_in <= 60 * 60
-    assert task1.id in repr(exc_info.value)
+    assert exc_info.value.likely_culprit == task_1.id
+    assert task_1.id in repr(exc_info.value)
 
 
 def test_unique_explicit_key(celery_session_worker):
     """
     Ensure a unique task with an explicitly provided key works.
     """
-    task1: AsyncResult = explicit_key_task.apply_async()
-    result: AsyncResult = explicit_key_task.apply_async()
-    assert task1.id == result.id
+    task_1: AsyncResult = explicit_key_task.apply_async()
+    task_2: AsyncResult = explicit_key_task.apply_async()
+    assert task_1.id == task_2.id
 
     # Ensure the key gets erased after the task finishes, and we can queue
     # again.
-    task1.get()
-    explicit_key_task.apply_async()
+    task_1.get()
+    task_3 = explicit_key_task.apply_async()
+    assert task_3.id != task_1.id
+
+
+def test_unique_explicit_callable_key(celery_session_worker):
+    """
+    Ensure a unique task with an explicitly provided key works.
+    """
+    task_1: AsyncResult = explicit_key_callable_task.apply_async()
+    task_2: AsyncResult = explicit_key_callable_task.apply_async()
+    assert task_1.id == task_2.id
+
+    # Ensure the key gets erased after the task finishes, and we can queue
+    # again.
+    task_1.get()
+    task_3 = explicit_key_callable_task.apply_async()
+    assert task_3.id != task_1.id
 
 
 def test_different_keys(celery_session_worker):
@@ -99,16 +121,31 @@ def test_different_keys(celery_session_worker):
     Ensure tasks enqueued with different args (and thus different auto keys)
     works as expected.
     """
-    default_unique_task.delay('Task1')
-    default_unique_task.delay('Task2')
+    task_1 = default_unique_task.delay("Task1")
+    task_2 = default_unique_task.delay("Task2")
+
+    assert task_1.id != task_2.id
 
 
 def test_task_with_override_config(celery_session_worker):
     """
     Ensure we can override Config values from the `heimdall` task argument.
     """
-    task1: AsyncResult = task_with_override_config.apply_async()
-    result: AsyncResult = task_with_override_config.apply_async()
+    task_1: AsyncResult = task_with_override_config.apply_async()
+    task_2: AsyncResult = task_with_override_config.apply_async()
 
-    assert task1.id == result.id
-    assert task1.get() == 'new-prefix:'
+    assert task_1.id == task_2.id
+    assert task_1.get() == "new-prefix"
+
+
+def test_task_with_late_lock(celery_session_worker):
+    """
+    Ensure that tasks that only acquire their lock on call() work.
+
+    This is hard to properly test with the pytest celery integration, since
+    it only runs one task at a time.
+    """
+    task_1: AsyncResult = task_with_late_lock.apply_async()
+    task_2: AsyncResult = task_with_late_lock.apply_async()
+
+    assert task_1.id != task_2.id
