@@ -29,7 +29,7 @@ inspector = ["click", "sqlalchemy"]
 heimdall-inspector = "celery_heimdall.contrib.inspector.cli:cli"
 
 [build-system]
-requires = ["poetry-core>=1.0.1"]
+requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.black]
