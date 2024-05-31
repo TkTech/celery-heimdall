@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "celery-heimdall"
-version = "1.0.0"
+version = "1.0.1"
 description = "Helpful celery extensions."
 authors = ["Tyler Kennedy <tk@tkte.ch>"]
 license = "MIT"
@@ -29,7 +29,7 @@ inspector = ["click", "sqlalchemy"]
 heimdall-inspector = "celery_heimdall.contrib.inspector.cli:cli"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core>=1.0.1"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.black]
