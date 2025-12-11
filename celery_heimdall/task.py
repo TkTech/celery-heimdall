@@ -202,12 +202,12 @@ class HeimdallTask(celery.Task, ABC):
         """
         # Try to use the Celery result backend, if it's configured for redis.
         backend = self.app.conf.get("result_backend") or ""
-        if backend.startswith("redis://"):
+        if backend.startswith(("redis://", "rediss://")):
             return redis.Redis.from_url(backend)
 
         # If not the backend, try the broker....
         broker = self.app.conf.get("broker_url") or ""
-        if broker.startswith("redis://"):
+        if broker.startswith(("redis://", "rediss://")):
             return redis.Redis.from_url(broker)
 
         # Nope, we can't find a usable redis, user will need to implement

@@ -1,0 +1,30 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis-tls:
+    image: redis:7-alpine
+    ports:
+      - "16380:6379"
+    volumes:
+      - ./tests/certs:/certs:ro
+    command: >
+      redis-server
+      --tls-port 6379
+      --port 0
+      --tls-cert-file /certs/redis.crt
+      --tls-key-file /certs/redis.key
+      --tls-ca-cert-file /certs/ca.crt
+      --tls-auth-clients no
+    healthcheck:
+      test: ["CMD", "redis-cli", "--tls", "--insecure", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

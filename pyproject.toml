@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "celery-heimdall"
-version = "1.0.1"
+version = "1.0.2"
 description = "Helpful celery extensions."
 authors = ["Tyler Kennedy <tk@tkte.ch>"]
 license = "MIT"
@@ -9,7 +9,7 @@ homepage = "https://github.com/tktech/celery-heimdall"
 repository = "https://github.com/tktech/celery-heimdall"
 
 [tool.poetry.dependencies]
-python = "^3.8"
+python = "^3.9"
 celery = "*"
 redis = "*"
 click = {version = "*", optional = true}
