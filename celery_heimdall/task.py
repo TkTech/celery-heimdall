@@ -3,6 +3,8 @@ import enum
 import hashlib
 import datetime
 import inspect
+import random
+import time
 from abc import ABC
 from typing import Union, Tuple, Callable
 
@@ -11,6 +13,9 @@ import redis.lock
 import celery
 from kombu import serialization
 from kombu.utils import uuid
+from limits import RateLimitItemPerSecond
+from limits.storage import RedisStorage
+from limits.strategies import MovingWindowRateLimiter
 
 from celery_heimdall.config import Config
 from celery_heimdall.errors import AlreadyQueuedError
@@ -96,7 +101,6 @@ def rate_limited_countdown(task: "HeimdallTask", key, args, kwargs):
     # Based on improvements to Vigrond's original implementation by mlissner
     # on stack overflow.
     h = getattr(task, "heimdall", {})
-    r = task.heimdall_redis
 
     if "rate_limit" in h:
         try:
@@ -119,39 +123,26 @@ def rate_limited_countdown(task: "HeimdallTask", key, args, kwargs):
     else:
         times, per = h["times"], h["per"]
 
-    number_of_running_tasks = r.get(key)
-    if number_of_running_tasks is None:
-        r.set(key, 1, ex=per)
+    rate = RateLimitItemPerSecond(times, per)
+    limiter = task.heimdall_rate_limiter
+
+    if limiter.hit(rate, key):
         return 0
 
-    if int(number_of_running_tasks) < times:
-        if r.incr(key, 1) == 1:
-            r.expire(key, per)
-        return 0
+    stats = limiter.get_window_stats(rate, key)
+    reset_seconds = max(0.0, stats.reset_time - time.time())
+    per_task_spacing = per / times
 
-    schedule_key = f"{key}.schedule"
-    now = datetime.datetime.now(tz=datetime.timezone.utc)
+    # Stats sampled at the window boundary: hit() saw a full window but
+    # get_window_stats() saw it already cleared. Retry after a short jittered
+    # delay so hit() decides on the next attempt.
+    if reset_seconds <= 0:
+        return random.uniform(1e-3, per_task_spacing)
 
-    delay = r.get(schedule_key)
-    if delay is None or int(delay) < now.timestamp():
-        # Either not scheduled, or scheduled in the past.
-        ttl = r.ttl(key)
-        if ttl < 0:
-            return 0
-
-        r.set(
-            schedule_key,
-            int((now + datetime.timedelta(seconds=ttl)).timestamp()),
-            ex=ttl + 20,
-        )
-        return ttl
-
-    new_time = datetime.datetime.fromtimestamp(
-        int(delay), tz=datetime.timezone.utc
-    ) + datetime.timedelta(seconds=per // times)
-    new_delay = int((new_time - now).total_seconds())
-    r.set(schedule_key, int(new_time.timestamp()), ex=new_delay + 20)
-    return new_delay
+    # Add per-task jitter to spread rescheduled tasks evenly across the
+    # window. Without jitter, all excess tasks retry at the same moment,
+    # causing an ever-growing burst each window.
+    return reset_seconds + random.uniform(0, per_task_spacing)
 
 
 class HeimdallTask(celery.Task, ABC):
@@ -167,6 +158,7 @@ class HeimdallTask(celery.Task, ABC):
         super().__init__()
         self._heimdall_config = None
         self._heimdall_redis = None
+        self._heimdall_rate_limiter = None
 
     @property
     def heimdall_config(self) -> Config:
@@ -179,6 +171,37 @@ class HeimdallTask(celery.Task, ABC):
         if not self._heimdall_redis:
             self._heimdall_redis = self.setup_redis()
         return self._heimdall_redis
+
+    @property
+    def heimdall_rate_limiter(self) -> MovingWindowRateLimiter:
+        if not self._heimdall_rate_limiter:
+            self._heimdall_rate_limiter = self.setup_rate_limiter()
+        return self._heimdall_rate_limiter
+
+    def setup_rate_limiter(self) -> MovingWindowRateLimiter:
+        """
+        Sets up the rate limiter used for atomic check-and-increment. By
+        default uses the same Redis instance as setup_redis(). Override to
+        provide a custom limiter, e.g.:
+
+        .. code::
+
+            from limits.storage import RedisStorage
+            from limits.strategies import MovingWindowRateLimiter
+
+            class MyTask(HeimdallTask):
+                def setup_rate_limiter(self):
+                    return MovingWindowRateLimiter(RedisStorage("redis://"))
+        """
+        backend = self.app.conf.get("result_backend") or ""
+        if backend.startswith(("redis://", "rediss://")):
+            return MovingWindowRateLimiter(RedisStorage(backend))
+
+        broker = self.app.conf.get("broker_url") or ""
+        if broker.startswith(("redis://", "rediss://")):
+            return MovingWindowRateLimiter(RedisStorage(broker))
+
+        raise NotImplementedError()
 
     def setup_redis(self) -> redis.Redis:
         """

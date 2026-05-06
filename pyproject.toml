@@ -12,6 +12,7 @@ repository = "https://github.com/tktech/celery-heimdall"
 python = "^3.9"
 celery = "*"
 redis = "*"
+limits = "*"
 click = {version = "*", optional = true}
 SQLAlchemy = {version = "*", optional = true}
 
