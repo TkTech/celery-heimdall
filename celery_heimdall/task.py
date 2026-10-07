@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import enum
 import hashlib
@@ -7,6 +8,7 @@ from abc import ABC
 from typing import Union, Tuple, Callable
 
 import redis
+import redis.exceptions
 import redis.lock
 import celery
 from kombu import serialization
@@ -51,8 +53,17 @@ def acquire_lock(task: "HeimdallTask", key: str, timeout: int, *, task_id: str):
     return acquired
 
 
-def release_lock(task: "HeimdallTask", key: str):
-    task.heimdall_redis.delete(key)
+def release_lock(task: "HeimdallTask", key: str, *, task_id: str = None):
+    """
+    Release the lock at `key`. If `task_id` is given, the lock is only
+    released if it's still held by that task.
+    """
+    if task_id is None:
+        task.heimdall_redis.delete(key)
+        return
+
+    with contextlib.suppress(redis.exceptions.LockNotOwnedError):
+        redis.lock.Lock(task.heimdall_redis, key).do_release(task_id)
 
 
 def unique_key_for_task(
@@ -321,6 +332,7 @@ class HeimdallTask(celery.Task, ABC):
                 unique_key_for_task(
                     self, args, kwargs, prefix=self.heimdall_config.lock_prefix
                 ),
+                task_id=task_id,
             )
 
         super().after_return(status, retval, task_id, args, kwargs, einfo)

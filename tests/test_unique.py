@@ -6,7 +6,11 @@ import pytest
 from celery.result import AsyncResult
 
 from celery_heimdall import HeimdallTask, AlreadyQueuedError
-from celery_heimdall.task import release_lock, unique_key_for_task
+from celery_heimdall.task import (
+    acquire_lock,
+    release_lock,
+    unique_key_for_task,
+)
 
 
 @celery.shared_task(
@@ -60,6 +64,15 @@ def explicit_key_task_str():
 )
 def task_with_override_config(task: HeimdallTask):
     return task.heimdall_config.lock_prefix
+
+
+@celery.shared_task(
+    base=HeimdallTask,
+    heimdall={"unique": True, "unique_lock_blocking": False},
+    name="non_blocking_unique_task",
+)
+def non_blocking_unique_task(dummy_arg=None):
+    return
 
 
 def test_default_unique(celery_session_worker):
@@ -160,3 +173,41 @@ def test_send_task(celery_session_app, celery_session_worker):
 
     assert task1.get() == task1.id
     assert task2.get() is None
+
+
+def _hold_lock(task, holder_id):
+    key = unique_key_for_task(
+        task, ("held",), {}, prefix=task.heimdall_config.lock_prefix
+    )
+    release_lock(task, key)
+    acquire_lock(task, key, 60, task_id=holder_id)
+    return key
+
+
+def test_dropped_duplicate_keeps_holder_lock(celery_session_app):
+    """
+    Ensure a duplicate that is dropped at run time (ex: sent by celery beat,
+    or redelivered, both of which bypass `apply_async()`) doesn't release
+    the lock held by the task that's still running.
+    """
+    task = celery_session_app.tasks["non_blocking_unique_task"]
+    key = _hold_lock(task, "holder-id")
+
+    try:
+        # Eager apply goes through the tracer (and thus `after_return`)
+        # but skips `apply_async()`, just like beat.
+        task.apply(args=("held",), task_id="duplicate-id")
+        assert task.heimdall_redis.get(key) == b"holder-id"
+    finally:
+        release_lock(task, key)
+
+
+def test_holder_releases_own_lock(celery_session_app):
+    """
+    Ensure the task holding the lock still releases it when it finishes.
+    """
+    task = celery_session_app.tasks["non_blocking_unique_task"]
+    key = _hold_lock(task, "holder-id")
+
+    task.apply(args=("held",), task_id="holder-id")
+    assert task.heimdall_redis.get(key) is None
