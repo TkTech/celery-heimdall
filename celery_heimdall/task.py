@@ -119,14 +119,16 @@ def rate_limited_countdown(task: "HeimdallTask", key, args, kwargs):
     else:
         times, per = h["times"], h["per"]
 
-    number_of_running_tasks = r.get(key)
-    if number_of_running_tasks is None:
-        r.set(key, 1, ex=per)
-        return 0
-
-    if int(number_of_running_tasks) < times:
-        if r.incr(key, 1) == 1:
-            r.expire(key, per)
+    # Taking a slot must be a single atomic step. If we read the count and then
+    # write it back, every worker that reads the same count takes the same
+    # slot and the rate limit is exceeded. Starting the window (if we're the
+    # first in it) and incrementing the count are queued in one transaction,
+    # so concurrent workers each get a distinct slot number.
+    pipe = r.pipeline()
+    pipe.set(key, 0, ex=per, nx=True)
+    pipe.incr(key)
+    _, slot = pipe.execute()
+    if slot <= times:
         return 0
 
     schedule_key = f"{key}.schedule"
